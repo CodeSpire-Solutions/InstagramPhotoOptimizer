@@ -6,6 +6,8 @@
 .gradle/
 **/build/
 !gradle/wrapper/gradle-wrapper.jar
+app/release/
+*.dm
 
 # Local config
 local.properties
