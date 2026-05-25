@@ -1,0 +1,84 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="158dp"
+    android:height="158dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- TOP LEFT -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#111111"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="
+            M22,42
+            V26
+            A6,6 0 0 1 28,20
+            H44" />
+
+    <!-- TOP RIGHT -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#111111"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="
+            M64,20
+            H80
+            A6,6 0 0 1 86,26
+            V42" />
+
+    <!-- BOTTOM LEFT -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#111111"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="
+            M22,66
+            V82
+            A6,6 0 0 0 28,88
+            H44" />
+
+    <!-- BOTTOM RIGHT -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#111111"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="
+            M64,88
+            H80
+            A6,6 0 0 0 86,82
+            V66" />
+
+    <!-- OUTER LENS -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#111111"
+        android:strokeWidth="5"
+        android:pathData="
+            M54,30
+            A24,24 0 1,1 53.9,30" />
+
+    <!-- INNER LENS -->
+    <path
+        android:fillColor="#111111"
+        android:pathData="
+            M54,42
+            A12,12 0 1,1 53.9,42" />
+
+    <!-- HIGHLIGHT -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+            M46,50
+            C46,44 50,40 56,38
+            C51,39 47,43 46,48
+            C45,50 45,51 46,50Z" />
+
+</vector>
