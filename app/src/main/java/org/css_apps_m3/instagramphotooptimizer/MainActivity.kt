@@ -15,10 +15,12 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -37,7 +39,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,14 +52,42 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import org.css_apps_m3.instagramphotooptimizer.ui.theme.ExpressivePalette
+import org.css_apps_m3.instagramphotooptimizer.ui.theme.ExpressiveThemeOptions
+import org.css_apps_m3.instagramphotooptimizer.ui.theme.ExpressiveTypographyStyle
+import org.css_apps_m3.instagramphotooptimizer.ui.theme.InstagramPhotoOptimizerTheme
+import org.css_apps_m3.instagramphotooptimizer.ui.theme.rememberDefaultExpressiveThemeOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,13 +100,22 @@ import java.util.zip.ZipOutputStream
 import kotlin.math.ceil
 
 private enum class ExportMode { POST, STORY }
+private enum class AppScreen { EDITOR, SETTINGS }
 private enum class FileSizeMode { STRICT_1_6_MB, ADAPTIVE_BEST_QUALITY }
 private enum class ResolutionProfile { STANDARD_IG, HIGH_DETAIL }
+private enum class DepthHandlingMode { OPTIMIZE_MAY_LOSE_DEPTH, PRESERVE_SOCIAL_DEPTH }
 
 private data class AdvancedSettings(
     val fileSizeMode: FileSizeMode = FileSizeMode.ADAPTIVE_BEST_QUALITY,
     val resolutionProfile: ResolutionProfile = ResolutionProfile.HIGH_DETAIL,
-    val keepDepthAndXmpMetadata: Boolean = true
+    val keepDepthAndXmpMetadata: Boolean = true,
+    val depthHandlingMode: DepthHandlingMode = DepthHandlingMode.OPTIMIZE_MAY_LOSE_DEPTH,
+    val antiAliasingLevel: Int = 2
+)
+
+private data class ZoomDialogImage(
+    val bitmap: Bitmap,
+    val title: String
 )
 
 class MainActivity : ComponentActivity() {
@@ -85,6 +123,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         sharedImageUris = extractSharedImageUris(intent)
         setContent { MainScreen(sharedImageUris) }
     }
@@ -98,16 +137,9 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MainScreen(incomingUris: List<Uri>) {
-    val bg = Color(0xFF090B10)
-    val surface = Color(0xFF111522)
-    val border = Color(0xFF222A3D)
-    val textPrimary = Color(0xFFF3F4F6)
-    val textSecondary = Color(0xFFA8B1C5)
-    val primary = Color(0xFFE5E7EB)
-    val primaryText = Color(0xFF0B1020)
-
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val systemThemeOptions = rememberDefaultExpressiveThemeOptions()
 
     var selectedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var optimizedFile by remember { mutableStateOf<File?>(null) }
@@ -116,7 +148,18 @@ fun MainScreen(incomingUris: List<Uri>) {
     var isOptimizing by remember { mutableStateOf(false) }
     var exportMode by remember { mutableStateOf(ExportMode.POST) }
     var showAdvanced by remember { mutableStateOf(false) }
-    var advancedSettings by remember { mutableStateOf(AdvancedSettings()) }
+    var advancedSettings by remember { mutableStateOf(loadAdvancedSettings(context)) }
+    var themeOptions by remember { mutableStateOf(loadThemeOptions(context, systemThemeOptions)) }
+    var currentScreen by remember { mutableStateOf(AppScreen.EDITOR) }
+    var zoomDialogImage by remember { mutableStateOf<ZoomDialogImage?>(null) }
+    var showResultDetails by remember { mutableStateOf(false) }
+
+    LaunchedEffect(advancedSettings) {
+        saveAdvancedSettings(context, advancedSettings)
+    }
+    LaunchedEffect(themeOptions) {
+        saveThemeOptions(context, themeOptions)
+    }
 
     LaunchedEffect(incomingUris) {
         if (incomingUris.isNotEmpty()) {
@@ -138,19 +181,57 @@ fun MainScreen(incomingUris: List<Uri>) {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(bg)) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.Top,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            TextBlock("Instagram Photo Optimizer", 24.sp, FontWeight.Bold, textPrimary)
-            Spacer(modifier = Modifier.height(24.dp))
+    InstagramPhotoOptimizerTheme(options = themeOptions) {
+        val colors = MaterialTheme.colorScheme
+        val bg = colors.background
+        val surface = colors.surfaceContainerHigh
+        val border = colors.outline.copy(alpha = 0.5f)
+        val textPrimary = colors.onSurface
+        val textSecondary = colors.onSurfaceVariant
+        val primary = colors.primary
+        val primaryText = colors.onPrimary
+
+        if (currentScreen == AppScreen.SETTINGS) {
+            ThemeSettingsScreen(
+                themeOptions = themeOptions,
+                onThemeOptionsChange = { themeOptions = it },
+                onBack = { currentScreen = AppScreen.EDITOR },
+                surface = surface,
+                border = border,
+                textPrimary = textPrimary,
+                textSecondary = textSecondary,
+                primary = primary,
+                primaryText = primaryText
+            )
+            return@InstagramPhotoOptimizerTheme
+        }
+
+        Box(modifier = Modifier.fillMaxSize().background(bg)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                    .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.Top,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextBlock("Instagram Photo Optimizer", 24.sp, FontWeight.Bold, textPrimary)
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = { currentScreen = AppScreen.SETTINGS }) {
+                    Icon(
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = "Theme Settings",
+                        tint = textPrimary
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
 
             TextBlock("Mode", 14.sp, FontWeight.SemiBold, textPrimary)
             Spacer(modifier = Modifier.height(8.dp))
@@ -253,6 +334,64 @@ fun MainScreen(incomingUris: List<Uri>) {
                                 primaryText = primaryText
                             )
                         }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        TextBlock("Depth Data for Social Media", 13.sp, FontWeight.SemiBold, textPrimary)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            ModeChip(
+                                label = "Optimize (may lose)",
+                                isSelected = advancedSettings.depthHandlingMode == DepthHandlingMode.OPTIMIZE_MAY_LOSE_DEPTH,
+                                onClick = {
+                                    advancedSettings = advancedSettings.copy(
+                                        depthHandlingMode = DepthHandlingMode.OPTIMIZE_MAY_LOSE_DEPTH
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                surface = surface,
+                                border = border,
+                                textPrimary = textPrimary,
+                                primary = primary,
+                                primaryText = primaryText
+                            )
+                            Spacer(modifier = Modifier.size(8.dp))
+                            ModeChip(
+                                label = "Preserve (no re-encode)",
+                                isSelected = advancedSettings.depthHandlingMode == DepthHandlingMode.PRESERVE_SOCIAL_DEPTH,
+                                onClick = {
+                                    advancedSettings = advancedSettings.copy(
+                                        depthHandlingMode = DepthHandlingMode.PRESERVE_SOCIAL_DEPTH
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                surface = surface,
+                                border = border,
+                                textPrimary = textPrimary,
+                                primary = primary,
+                                primaryText = primaryText
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        TextBlock("Anti-Aliasing Strength", 13.sp, FontWeight.SemiBold, textPrimary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Slider(
+                            value = advancedSettings.antiAliasingLevel.toFloat(),
+                            onValueChange = {
+                                advancedSettings = advancedSettings.copy(
+                                    antiAliasingLevel = it.toInt().coerceIn(0, 3)
+                                )
+                            },
+                            valueRange = 0f..3f,
+                            steps = 2
+                        )
+                        val aaLabel = when (advancedSettings.antiAliasingLevel) {
+                            0 -> "Off"
+                            1 -> "Low"
+                            2 -> "Medium"
+                            else -> "High"
+                        }
+                        TextBlock("Current: $aaLabel", 12.sp, FontWeight.Medium, textSecondary)
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -272,15 +411,21 @@ fun MainScreen(incomingUris: List<Uri>) {
                 LaunchedEffect(uri) {
                     previewBitmap = withContext(Dispatchers.IO) { decodePreviewBitmap(context, uri) }
                 }
-                Box(
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(surface)
-                        .border(1.dp, border, RoundedCornerShape(16.dp)).padding(8.dp)
+                ImageCanvasCard(
+                    title = "Original Canvas",
+                    subtitle = "Klick zum Vergrößern",
+                    surface = surface,
+                    border = border,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary
                 ) {
                     previewBitmap?.let { bitmap ->
                         Image(
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = null,
-                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)),
+                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable {
+                                zoomDialogImage = ZoomDialogImage(bitmap, "Originalbild")
+                            },
                             contentScale = ContentScale.Fit
                         )
                     } ?: Box(modifier = Modifier.fillMaxWidth().height(420.dp), contentAlignment = Alignment.Center) {
@@ -298,22 +443,31 @@ fun MainScreen(incomingUris: List<Uri>) {
                     if (isOptimizing) return@PrimaryAction
                     isOptimizing = true
                     scope.launch {
-                        if (selectedImageUris.size == 1) {
-                            val output = withContext(Dispatchers.Default) {
-                                optimizeForInstagram(context, selectedImageUris.first(), exportMode, advancedSettings)
+                        try {
+                            if (selectedImageUris.size == 1) {
+                                val output = withContext(Dispatchers.Default) {
+                                    optimizeForInstagram(context, selectedImageUris.first(), exportMode, advancedSettings)
+                                }
+                                optimizedFile = output
+                                optimizedZip = null
+                                optimizeStatus = "Single image optimized."
+                            } else {
+                                val zip = withContext(Dispatchers.Default) {
+                                    optimizeMultipleToZip(context, selectedImageUris, exportMode, advancedSettings)
+                                }
+                                optimizedZip = zip
+                                optimizedFile = null
+                                optimizeStatus = "Batch optimized and packed as ZIP (${selectedImageUris.size} files)."
                             }
-                            optimizedFile = output
-                            optimizedZip = null
-                            optimizeStatus = "Single image optimized."
-                        } else {
-                            val zip = withContext(Dispatchers.Default) {
-                                optimizeMultipleToZip(context, selectedImageUris, exportMode, advancedSettings)
-                            }
-                            optimizedZip = zip
-                            optimizedFile = null
-                            optimizeStatus = "Batch optimized and packed as ZIP (${selectedImageUris.size} files)."
+                        } catch (_: OutOfMemoryError) {
+                            optimizeStatus = "Image too large for current settings. Try Standard IG profile."
+                            Toast.makeText(context, "Optimization failed: out of memory.", Toast.LENGTH_LONG).show()
+                        } catch (_: Exception) {
+                            optimizeStatus = "Optimization failed. Please try again."
+                            Toast.makeText(context, "Optimization failed.", Toast.LENGTH_LONG).show()
+                        } finally {
+                            isOptimizing = false
                         }
-                        isOptimizing = false
                     }
                 }
             }
@@ -334,6 +488,61 @@ fun MainScreen(incomingUris: List<Uri>) {
             }
 
             optimizedFile?.let { file ->
+                var optimizedPreviewBitmap by remember(file) { mutableStateOf<Bitmap?>(null) }
+                LaunchedEffect(file) {
+                    optimizedPreviewBitmap = withContext(Dispatchers.IO) {
+                        decodePreviewBitmap(context, Uri.fromFile(file))
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                ImageCanvasCard(
+                    title = "Ergebnis Canvas",
+                    subtitle = "Klick für Vollbild + Zoom",
+                    surface = Color(0xFF182334),
+                    border = Color(0xFF35557A),
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary
+                ) {
+                    optimizedPreviewBitmap?.let { bitmap ->
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable {
+                                zoomDialogImage = ZoomDialogImage(bitmap, "Optimiertes Ergebnis")
+                            },
+                            contentScale = ContentScale.Fit
+                        )
+                    } ?: Box(modifier = Modifier.fillMaxWidth().height(420.dp), contentAlignment = Alignment.Center) {
+                        TextBlock("Loading optimized preview...", 13.sp, FontWeight.Medium, textSecondary)
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                FilledTonalButton(
+                    onClick = { showResultDetails = !showResultDetails },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (showResultDetails) "Details ausblenden" else "Details anzeigen")
+                }
+                if (showResultDetails) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF162033))
+                            .border(1.dp, Color(0xFF2A3E5E), RoundedCornerShape(12.dp))
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            TextBlock("Datei: ${file.name}", 12.sp, FontWeight.Medium, textSecondary)
+                            TextBlock("Größe: ${file.length() / 1024} KB", 12.sp, FontWeight.Medium, textSecondary)
+                            optimizedPreviewBitmap?.let { bmp ->
+                                TextBlock("Auflösung: ${bmp.width} x ${bmp.height}", 12.sp, FontWeight.Medium, textSecondary)
+                            }
+                            TextBlock("Modus: ${if (exportMode == ExportMode.POST) "Post" else "Story"}", 12.sp, FontWeight.Medium, textSecondary)
+                        }
+                    }
+                }
                 Spacer(modifier = Modifier.height(12.dp))
                 PrimaryAction("Share to Instagram", primary, primaryText) { shareToInstagram(context, file) }
                 Spacer(modifier = Modifier.height(10.dp))
@@ -366,6 +575,277 @@ fun MainScreen(incomingUris: List<Uri>) {
             }
 
             Spacer(modifier = Modifier.height(36.dp))
+            }
+        }
+    }
+
+    zoomDialogImage?.let { data ->
+        ZoomableImageDialog(
+            image = data.bitmap,
+            title = data.title,
+            onDismiss = { zoomDialogImage = null }
+        )
+    }
+}
+
+@Composable
+private fun ImageCanvasCard(
+    title: String,
+    subtitle: String,
+    surface: Color,
+    border: Color,
+    textPrimary: Color,
+    textSecondary: Color,
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = surface),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, border)
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            TextBlock(title, 14.sp, FontWeight.SemiBold, textPrimary)
+            TextBlock(subtitle, 12.sp, FontWeight.Medium, textSecondary)
+            Spacer(modifier = Modifier.height(8.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun ThemeSettingsScreen(
+    themeOptions: ExpressiveThemeOptions,
+    onThemeOptionsChange: (ExpressiveThemeOptions) -> Unit,
+    onBack: () -> Unit,
+    surface: Color,
+    border: Color,
+    textPrimary: Color,
+    textSecondary: Color,
+    primary: Color,
+    primaryText: Color
+) {
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.height(12.dp))
+            TextBlock("Theme Settings", 24.sp, FontWeight.Bold, textPrimary)
+            Spacer(modifier = Modifier.height(12.dp))
+            SecondaryAction(
+                label = "Zurück",
+                onClick = onBack,
+                surface = surface,
+                border = border,
+                textPrimary = textPrimary
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(surface)
+                    .border(1.dp, border, RoundedCornerShape(14.dp)).padding(12.dp)
+            ) {
+                Column {
+                    TextBlock("Material 3 Expressive Optionen", 14.sp, FontWeight.SemiBold, textPrimary)
+                    TextBlock("Paletten, Typografie, Kontrast und Dark/Light", 12.sp, FontWeight.Medium, textSecondary)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ModeChip(
+                            label = if (themeOptions.useDarkTheme) "Dark On" else "Dark Off",
+                            isSelected = true,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(useDarkTheme = !themeOptions.useDarkTheme)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                        Spacer(modifier = Modifier.size(8.dp))
+                        ModeChip(
+                            label = if (themeOptions.useHighContrast) "High Contrast" else "Standard Contrast",
+                            isSelected = themeOptions.useHighContrast,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(useHighContrast = !themeOptions.useHighContrast)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ModeChip(
+                            label = "Dynamic",
+                            isSelected = themeOptions.palette == ExpressivePalette.DYNAMIC,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(palette = ExpressivePalette.DYNAMIC)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                        Spacer(modifier = Modifier.size(8.dp))
+                        ModeChip(
+                            label = "Midnight",
+                            isSelected = themeOptions.palette == ExpressivePalette.MIDNIGHT,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(palette = ExpressivePalette.MIDNIGHT)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ModeChip(
+                            label = "Sunset",
+                            isSelected = themeOptions.palette == ExpressivePalette.SUNSET,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(palette = ExpressivePalette.SUNSET)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                        Spacer(modifier = Modifier.size(8.dp))
+                        ModeChip(
+                            label = "Forest",
+                            isSelected = themeOptions.palette == ExpressivePalette.FOREST,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(palette = ExpressivePalette.FOREST)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ModeChip(
+                        label = "Mono",
+                        isSelected = themeOptions.palette == ExpressivePalette.MONO,
+                        onClick = { onThemeOptionsChange(themeOptions.copy(palette = ExpressivePalette.MONO)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        surface = surface,
+                        border = border,
+                        textPrimary = textPrimary,
+                        primary = primary,
+                        primaryText = primaryText
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ModeChip(
+                            label = "Type Balanced",
+                            isSelected = themeOptions.typographyStyle == ExpressiveTypographyStyle.BALANCED,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(typographyStyle = ExpressiveTypographyStyle.BALANCED)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                        Spacer(modifier = Modifier.size(8.dp))
+                        ModeChip(
+                            label = "Type Compact",
+                            isSelected = themeOptions.typographyStyle == ExpressiveTypographyStyle.COMPACT,
+                            onClick = { onThemeOptionsChange(themeOptions.copy(typographyStyle = ExpressiveTypographyStyle.COMPACT)) },
+                            modifier = Modifier.weight(1f),
+                            surface = surface,
+                            border = border,
+                            textPrimary = textPrimary,
+                            primary = primary,
+                            primaryText = primaryText
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ModeChip(
+                        label = "Type Reading",
+                        isSelected = themeOptions.typographyStyle == ExpressiveTypographyStyle.READING,
+                        onClick = { onThemeOptionsChange(themeOptions.copy(typographyStyle = ExpressiveTypographyStyle.READING)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        surface = surface,
+                        border = border,
+                        textPrimary = textPrimary,
+                        primary = primary,
+                        primaryText = primaryText
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZoomableImageDialog(image: Bitmap, title: String, onDismiss: () -> Unit) {
+    var scale by remember { mutableStateOf(1f) }
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0D1524)),
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                TextBlock(title, 16.sp, FontWeight.SemiBold, Color(0xFFF3F4F6))
+                TextBlock("Pinch zum Zoomen, ziehen zum Verschieben", 12.sp, FontWeight.Medium, Color(0xFFA8B1C5))
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = Color(0xFF2A3D5E))
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(500.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF050913))
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 6f)
+                                offsetX += pan.x
+                                offsetY += pan.y
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = image.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = offsetX
+                                translationY = offsetY
+                            }
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Tippe außerhalb oder auf Schließen",
+                    color = Color(0xFFA8B1C5),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                    Text("Schließen")
+                }
+            }
         }
     }
 }
@@ -390,34 +870,36 @@ private fun ModeChip(
             .padding(vertical = 11.dp, horizontal = 10.dp),
         contentAlignment = Alignment.Center
     ) {
-        BasicText(label, style = TextStyle(color = fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold))
+        FilterChip(
+            selected = isSelected,
+            onClick = onClick,
+            label = { Text(label) },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = bg,
+                selectedLabelColor = fg,
+                containerColor = surface,
+                labelColor = textPrimary
+            )
+        )
     }
 }
 
 @Composable
 private fun TextBlock(text: String, size: androidx.compose.ui.unit.TextUnit, weight: FontWeight, color: Color) {
-    BasicText(text, style = TextStyle(fontSize = size, fontWeight = weight, color = color))
+    Text(text = text, fontSize = size, fontWeight = weight, color = color, style = MaterialTheme.typography.bodyMedium)
 }
 
 @Composable
 private fun PrimaryAction(label: String, primary: Color, primaryText: Color, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(primary)
-            .clickable(onClick = onClick).padding(vertical = 14.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        BasicText(label, style = TextStyle(color = primaryText, fontSize = 15.sp, fontWeight = FontWeight.SemiBold))
+    Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Text(label, color = primaryText)
     }
 }
 
 @Composable
 private fun SecondaryAction(label: String, onClick: () -> Unit, surface: Color, border: Color, textPrimary: Color) {
-    Box(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(surface)
-            .border(1.dp, border, RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 14.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        BasicText(label, style = TextStyle(color = textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold))
+    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Text(label, color = textPrimary)
     }
 }
 
@@ -446,6 +928,54 @@ private fun optimizeForInstagram(
     settings: AdvancedSettings,
     outputFileName: String = "instagram_optimized.jpg"
 ): File {
+    if (
+        settings.depthHandlingMode == DepthHandlingMode.PRESERVE_SOCIAL_DEPTH &&
+        settings.keepDepthAndXmpMetadata &&
+        hasDepthLikeMetadata(context, uri)
+    ) {
+        return copyOriginalToCache(context, uri, outputFileName)
+    }
+
+    try {
+        return optimizeForInstagramInternal(context, uri, mode, settings, outputFileName)
+    } catch (_: OutOfMemoryError) {
+        // Fallback profile for very large images/devices with low memory.
+        val safeSettings = settings.copy(
+            fileSizeMode = FileSizeMode.STRICT_1_6_MB,
+            resolutionProfile = ResolutionProfile.STANDARD_IG
+        )
+        return optimizeForInstagramInternal(context, uri, mode, safeSettings, outputFileName)
+    }
+}
+
+private fun copyOriginalToCache(context: Context, uri: Uri, outputFileName: String): File {
+    val output = File(context.cacheDir, outputFileName)
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        FileOutputStream(output).use { out -> input.copyTo(out) }
+    }
+    return output
+}
+
+private fun hasDepthLikeMetadata(context: Context, sourceUri: Uri): Boolean {
+    return try {
+        val exif = context.contentResolver.openInputStream(sourceUri)?.use { ExifInterface(it) } ?: return false
+        val xmp = exif.getAttribute(ExifInterface.TAG_XMP)?.lowercase().orEmpty()
+        xmp.contains("gdepth") ||
+            xmp.contains("depth") ||
+            xmp.contains("disparity") ||
+            xmp.contains("portrait")
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private fun optimizeForInstagramInternal(
+    context: Context,
+    uri: Uri,
+    mode: ExportMode,
+    settings: AdvancedSettings,
+    outputFileName: String
+): File {
     val source = ImageDecoder.createSource(context.contentResolver, uri)
     val srgb = ColorSpace.get(ColorSpace.Named.SRGB)
     var targetWidth = if (settings.resolutionProfile == ResolutionProfile.HIGH_DETAIL) 1440 else 1080
@@ -459,17 +989,29 @@ private fun optimizeForInstagram(
     val decodedBitmap = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
         val width = info.size.width
         val height = info.size.height
+        val megaPixels = (width.toLong() * height.toLong()) / 1_000_000L
         val scale = minOf(targetWidth / width.toFloat(), targetHeight / height.toFloat(), 1f)
         targetWidth = (width * scale).toInt().coerceAtLeast(1)
         targetHeight = (height * scale).toInt().coerceAtLeast(1)
 
+        var sampleSize = computeDecodeSampleSize(width, height, targetWidth, targetHeight)
+        if (megaPixels >= 20L) {
+            sampleSize = maxOf(sampleSize, 3)
+        }
+        if (megaPixels >= 36L) {
+            sampleSize = maxOf(sampleSize, 4)
+        }
+        if (megaPixels >= 48L) {
+            sampleSize = maxOf(sampleSize, 6)
+        }
+
         decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE)
         decoder.setTargetColorSpace(srgb)
-        decoder.setTargetSampleSize(computeDecodeSampleSize(width, height, targetWidth, targetHeight))
+        decoder.setTargetSampleSize(sampleSize)
         decoder.isMutableRequired = false
     }
 
-    val resizedBitmap = highQualityResize(decodedBitmap, targetWidth, targetHeight)
+    val resizedBitmap = highQualityResize(decodedBitmap, targetWidth, targetHeight, settings.antiAliasingLevel)
     val file = File(context.cacheDir, outputFileName)
     FileOutputStream(file).use { it.write(compressJpegSmart(resizedBitmap, settings)) }
 
@@ -491,7 +1033,7 @@ private fun compressJpegSmart(bitmap: Bitmap, settings: AdvancedSettings): ByteA
         val nextW = (working.width * 0.96f).toInt().coerceAtLeast(900)
         val nextH = (working.height * 0.96f).toInt().coerceAtLeast(900)
         if (nextW == working.width || nextH == working.height) return best
-        working = highQualityResize(working, nextW, nextH)
+        working = highQualityResize(working, nextW, nextH, settings.antiAliasingLevel)
         best = encodeJpeg(working, 95)
     }
     return best
@@ -521,24 +1063,34 @@ private fun findBestJpegAtOrBelowTarget(bitmap: Bitmap, targetBytes: Int, minQua
 }
 
 private fun computeDecodeSampleSize(sourceWidth: Int, sourceHeight: Int, targetWidth: Int, targetHeight: Int): Int {
-    val wantedW = (targetWidth * 2).coerceAtLeast(1)
-    val wantedH = (targetHeight * 2).coerceAtLeast(1)
+    // Decode closer to final size to reduce OOM risk on high-MP images.
+    val wantedW = targetWidth.coerceAtLeast(1)
+    val wantedH = targetHeight.coerceAtLeast(1)
     val ratioW = sourceWidth.toFloat() / wantedW.toFloat()
     val ratioH = sourceHeight.toFloat() / wantedH.toFloat()
     return minOf(ratioW, ratioH).toInt().coerceAtLeast(1)
 }
 
-private fun highQualityResize(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+private fun highQualityResize(source: Bitmap, targetWidth: Int, targetHeight: Int, antiAliasingLevel: Int): Bitmap {
     if (source.width == targetWidth && source.height == targetHeight) return source
 
     val downscaleRatio = maxOf(source.width, source.height).toFloat() / maxOf(targetWidth, targetHeight).toFloat().coerceAtLeast(1f)
-    val blurRadius = when {
+    val baseBlurRadius = when {
         downscaleRatio >= 4.0f -> 2
         downscaleRatio >= 2.4f -> 1
         else -> 0
     }
+    val userBoost = when (antiAliasingLevel.coerceIn(0, 3)) {
+        0 -> -1
+        1 -> 0
+        2 -> 1
+        else -> 2
+    }
+    val blurRadius = (baseBlurRadius + userBoost).coerceIn(0, 3)
 
-    var current = if (blurRadius > 0) applyBoxBlur(source, blurRadius) else source
+    val sourcePixels = source.width.toLong() * source.height.toLong()
+    val allowBlur = blurRadius > 0 && sourcePixels <= 5_000_000L
+    var current = if (allowBlur) applyBoxBlurSafe(source, blurRadius) else source
     val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
         isAntiAlias = true
         isFilterBitmap = true
@@ -621,6 +1173,16 @@ private fun applyBoxBlur(source: Bitmap, radius: Int): Bitmap {
 
     return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
         it.setPixels(out, 0, width, 0, 0, width, height)
+    }
+}
+
+private fun applyBoxBlurSafe(source: Bitmap, radius: Int): Bitmap {
+    return try {
+        applyBoxBlur(source, radius)
+    } catch (_: OutOfMemoryError) {
+        source
+    } catch (_: Exception) {
+        source
     }
 }
 
@@ -754,4 +1316,67 @@ private fun extractSharedImageUris(intent: Intent?): List<Uri> {
         }
         else -> emptyList()
     }
+}
+
+private fun loadAdvancedSettings(context: Context): AdvancedSettings {
+    val prefs = context.getSharedPreferences("optimizer_settings", Context.MODE_PRIVATE)
+    return AdvancedSettings(
+        fileSizeMode = if (prefs.getInt("file_size_mode", 1) == 0) {
+            FileSizeMode.STRICT_1_6_MB
+        } else {
+            FileSizeMode.ADAPTIVE_BEST_QUALITY
+        },
+        resolutionProfile = if (prefs.getInt("resolution_profile", 1) == 0) {
+            ResolutionProfile.STANDARD_IG
+        } else {
+            ResolutionProfile.HIGH_DETAIL
+        },
+        keepDepthAndXmpMetadata = prefs.getBoolean("keep_depth_xmp", true),
+        depthHandlingMode = if (prefs.getInt("depth_mode", 0) == 1) {
+            DepthHandlingMode.PRESERVE_SOCIAL_DEPTH
+        } else {
+            DepthHandlingMode.OPTIMIZE_MAY_LOSE_DEPTH
+        },
+        antiAliasingLevel = prefs.getInt("aa_level", 2).coerceIn(0, 3)
+    )
+}
+
+private fun saveAdvancedSettings(context: Context, settings: AdvancedSettings) {
+    val prefs = context.getSharedPreferences("optimizer_settings", Context.MODE_PRIVATE)
+    prefs.edit()
+        .putInt("file_size_mode", if (settings.fileSizeMode == FileSizeMode.STRICT_1_6_MB) 0 else 1)
+        .putInt("resolution_profile", if (settings.resolutionProfile == ResolutionProfile.STANDARD_IG) 0 else 1)
+        .putBoolean("keep_depth_xmp", settings.keepDepthAndXmpMetadata)
+        .putInt("depth_mode", if (settings.depthHandlingMode == DepthHandlingMode.PRESERVE_SOCIAL_DEPTH) 1 else 0)
+        .putInt("aa_level", settings.antiAliasingLevel)
+        .apply()
+}
+
+private fun loadThemeOptions(
+    context: Context,
+    fallback: ExpressiveThemeOptions
+): ExpressiveThemeOptions {
+    val prefs = context.getSharedPreferences("optimizer_theme", Context.MODE_PRIVATE)
+    val palette = prefs.getString("palette", null)?.let {
+        runCatching { ExpressivePalette.valueOf(it) }.getOrNull()
+    } ?: fallback.palette
+    val typography = prefs.getString("typography", null)?.let {
+        runCatching { ExpressiveTypographyStyle.valueOf(it) }.getOrNull()
+    } ?: fallback.typographyStyle
+    return fallback.copy(
+        useDarkTheme = prefs.getBoolean("dark_theme", fallback.useDarkTheme),
+        palette = palette,
+        typographyStyle = typography,
+        useHighContrast = prefs.getBoolean("high_contrast", false)
+    )
+}
+
+private fun saveThemeOptions(context: Context, options: ExpressiveThemeOptions) {
+    val prefs = context.getSharedPreferences("optimizer_theme", Context.MODE_PRIVATE)
+    prefs.edit()
+        .putBoolean("dark_theme", options.useDarkTheme)
+        .putString("palette", options.palette.name)
+        .putString("typography", options.typographyStyle.name)
+        .putBoolean("high_contrast", options.useHighContrast)
+        .apply()
 }
