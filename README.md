@@ -1,6 +1,7 @@
 # Instagram Photo Optimizer (Android)
 
 Offline-first Android app to optimize photos for Instagram uploads.
+You all know that the compression for photos is much more aggresive on Android, meanwhile on Apple Devices the compression isn't that aggresive. According to this [Reddit Post](https://www.reddit.com/r/AskPhotography/comments/m66yx0/bad_picture_quality_when_uploaded_to_instagram/) there are some techniques to get better image quality. This app automatically applies these techniques to selected images.
 Built with Kotlin + Jetpack Compose + Material 3.
 
 ## Features
