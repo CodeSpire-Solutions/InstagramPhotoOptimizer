@@ -1,57 +1,74 @@
 # Instagram Photo Optimizer (Android)
 
 Offline-first Android app to optimize photos for Instagram uploads.
-Built with Kotlin + Jetpack Compose.
+Built with Kotlin + Jetpack Compose + Material 3.
 
 ## Features
 
-- Select one or multiple images from gallery
-- Preserve original aspect ratio
-- Optimize for Instagram Post or Story formats
-- Smart JPEG compression with quality-first strategy
-- Export as single optimized image or ZIP batch
-- Share directly to Instagram (single image)
-- Share ZIP for batch workflows
-- Save optimized outputs locally
-- Fully offline (no cloud processing)
+- Single and batch image optimization
+- Optimized export for:
+  - Post mode
+  - Story mode
+- Advanced controls:
+  - Export size policy
+  - Resolution profile
+  - Depth/XMP handling
+  - Anti-aliasing strength
+- Before/after canvas preview
+- Result canvas rotation (`↺` / `↻`) after optimization
+  - Rotation is persisted into the optimized file
+- Direct Instagram share for single-image output
+- ZIP export/share for batch output
+- Local gallery/downloads save
+- Fully offline processing
 
-## Tech Stack
+## Technical Stack
 
 - Kotlin
 - Jetpack Compose
-- Android SDK (minSdk 26)
+- Android SDK
+- ExifInterface
+- Coroutines
+
+## SDK / Build
+
+- `minSdk = 29`
+- `targetSdk = 35`
+- `compileSdk = 35`
+- Java/Kotlin toolchain: `17`
 
 ## Getting Started
 
-1. Open in Android Studio.
-2. Sync Gradle.
-3. Run on device/emulator.
+1. Open project in Android Studio.
+2. Sync Gradle dependencies.
+3. Run on emulator/device.
 
-Debug APK output:
+Debug APK path:
 
 `app/build/outputs/apk/debug/app-debug.apk`
 
-## Image Quality Guidelines (Instagram)
+## Documentation
 
-This app follows practical upload recommendations commonly used by photographers:
+Detailed docs (including full option explanations and rebuild guide):
 
-- Use `sRGB` output
-- Keep valid Instagram aspect ratios
-- Avoid oversized uploads that trigger heavy recompression
-- Use JPEG with controlled compression
-- Resize before upload (instead of letting platform do aggressive scaling)
+- [App Documentation](docs/APP_DOCUMENTATION.md)
 
-Reference discussion:
+This documentation includes:
+- what each setting does,
+- complete processing flow,
+- technical pipeline details,
+- and step-by-step instructions to rebuild the app architecture from scratch.
 
-- [Reddit: Bad picture quality when uploaded to Instagram](https://www.reddit.com/r/AskPhotography/comments/m66yx0/bad_picture_quality_when_uploaded_to_instagram/?solution=6a591cf262ab644a6a591cf262ab644a&js_challenge=1&token=bbbe4bf1c9a2b5160829c4be34da58617db68bb3f4268f1d25af009064a75354&jsc_orig_r=)
+## Project Structure
 
-## Batch Workflow
-
-- Select multiple images
-- Optimize in one run
-- Get a ZIP package
-- Share ZIP directly
+- `app/src/main/java/org/css_apps_m3/instagramphotooptimizer/MainActivity.kt`
+  - UI screens and state handling
+  - image optimization pipeline
+  - preview/result canvas logic
+  - share/save/export logic
+- `app/src/main/java/org/css_apps_m3/instagramphotooptimizer/ui/theme/`
+  - theme, color, typography configuration
 
 ## License
 
-MIT License. See `LICENSE`.
+MIT License. See [LICENSE](LICENSE).

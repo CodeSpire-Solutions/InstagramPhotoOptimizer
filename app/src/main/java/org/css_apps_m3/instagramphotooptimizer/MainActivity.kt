@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.ColorSpace
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 import android.net.Uri
@@ -98,6 +99,8 @@ import java.io.IOException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.math.ceil
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 private enum class ExportMode { POST, STORY }
 private enum class AppScreen { EDITOR, SETTINGS }
@@ -110,7 +113,8 @@ private data class AdvancedSettings(
     val resolutionProfile: ResolutionProfile = ResolutionProfile.HIGH_DETAIL,
     val keepDepthAndXmpMetadata: Boolean = true,
     val depthHandlingMode: DepthHandlingMode = DepthHandlingMode.OPTIMIZE_MAY_LOSE_DEPTH,
-    val antiAliasingLevel: Int = 2
+    val antiAliasingLevel: Int = 2,
+    val preserveHdrIfAvailable: Boolean = true
 )
 
 private data class ZoomDialogImage(
@@ -149,6 +153,7 @@ fun MainScreen(incomingUris: List<Uri>) {
     var exportMode by remember { mutableStateOf(ExportMode.POST) }
     var showAdvanced by remember { mutableStateOf(false) }
     var advancedSettings by remember { mutableStateOf(loadAdvancedSettings(context)) }
+    var selectedImageHasHdr by remember { mutableStateOf<Boolean?>(null) }
     var themeOptions by remember { mutableStateOf(loadThemeOptions(context, systemThemeOptions)) }
     var currentScreen by remember { mutableStateOf(AppScreen.EDITOR) }
     var zoomDialogImage by remember { mutableStateOf<ZoomDialogImage?>(null) }
@@ -167,6 +172,15 @@ fun MainScreen(incomingUris: List<Uri>) {
             optimizedFile = null
             optimizedZip = null
             optimizeStatus = "Imported ${incomingUris.size} image(s) via Share."
+        }
+    }
+
+    LaunchedEffect(selectedImageUris) {
+        val first = selectedImageUris.firstOrNull()
+        selectedImageHasHdr = if (first == null) {
+            null
+        } else {
+            withContext(Dispatchers.IO) { hasHdrLikeSource(context, first) }
         }
     }
 
@@ -379,7 +393,7 @@ fun MainScreen(incomingUris: List<Uri>) {
                             value = advancedSettings.antiAliasingLevel.toFloat(),
                             onValueChange = {
                                 advancedSettings = advancedSettings.copy(
-                                    antiAliasingLevel = it.toInt().coerceIn(0, 3)
+                                    antiAliasingLevel = it.roundToInt().coerceIn(0, 3)
                                 )
                             },
                             valueRange = 0f..3f,
@@ -392,6 +406,51 @@ fun MainScreen(incomingUris: List<Uri>) {
                             else -> "High"
                         }
                         TextBlock("Current: $aaLabel", 12.sp, FontWeight.Medium, textSecondary)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        TextBlock("HDR Handling", 13.sp, FontWeight.SemiBold, textPrimary)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        if (selectedImageHasHdr == true) {
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                ModeChip(
+                                    label = "Preserve HDR",
+                                    isSelected = advancedSettings.preserveHdrIfAvailable,
+                                    onClick = {
+                                        advancedSettings = advancedSettings.copy(
+                                            preserveHdrIfAvailable = true
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    surface = surface,
+                                    border = border,
+                                    textPrimary = textPrimary,
+                                    primary = primary,
+                                    primaryText = primaryText
+                                )
+                                Spacer(modifier = Modifier.size(8.dp))
+                                ModeChip(
+                                    label = "Force SDR Optimize",
+                                    isSelected = !advancedSettings.preserveHdrIfAvailable,
+                                    onClick = {
+                                        advancedSettings = advancedSettings.copy(
+                                            preserveHdrIfAvailable = false
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    surface = surface,
+                                    border = border,
+                                    textPrimary = textPrimary,
+                                    primary = primary,
+                                    primaryText = primaryText
+                                )
+                            }
+                        } else {
+                            TextBlock(
+                                "No HDR detected. This option is irrelevant for SDR images.",
+                                12.sp,
+                                FontWeight.Medium,
+                                textSecondary
+                            )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -413,7 +472,7 @@ fun MainScreen(incomingUris: List<Uri>) {
                 }
                 ImageCanvasCard(
                     title = "Original Canvas",
-                    subtitle = "Klick zum Vergrößern",
+                    subtitle = "Tap to enlarge",
                     surface = surface,
                     border = border,
                     textPrimary = textPrimary,
@@ -489,6 +548,7 @@ fun MainScreen(incomingUris: List<Uri>) {
 
             optimizedFile?.let { file ->
                 var optimizedPreviewBitmap by remember(file) { mutableStateOf<Bitmap?>(null) }
+                var isApplyingResultRotation by remember(file) { mutableStateOf(false) }
                 LaunchedEffect(file) {
                     optimizedPreviewBitmap = withContext(Dispatchers.IO) {
                         decodePreviewBitmap(context, Uri.fromFile(file))
@@ -496,8 +556,8 @@ fun MainScreen(incomingUris: List<Uri>) {
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 ImageCanvasCard(
-                    title = "Ergebnis Canvas",
-                    subtitle = "Klick für Vollbild + Zoom",
+                    title = "Result Canvas",
+                    subtitle = "Tap for fullscreen + zoom",
                     surface = Color(0xFF182334),
                     border = Color(0xFF35557A),
                     textPrimary = textPrimary,
@@ -508,10 +568,58 @@ fun MainScreen(incomingUris: List<Uri>) {
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = null,
                             modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(12.dp)).clickable {
-                                zoomDialogImage = ZoomDialogImage(bitmap, "Optimiertes Ergebnis")
+                                zoomDialogImage = ZoomDialogImage(bitmap, "Optimized Result")
                             },
                             contentScale = ContentScale.Fit
                         )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (isApplyingResultRotation) return@OutlinedButton
+                                    isApplyingResultRotation = true
+                                    scope.launch {
+                                        val ok = withContext(Dispatchers.IO) {
+                                            rotateJpegFileInPlace(file, quarterTurns = 3)
+                                        }
+                                        if (ok) {
+                                            optimizedPreviewBitmap = withContext(Dispatchers.IO) {
+                                                decodePreviewBitmap(context, Uri.fromFile(file))
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "Rotation failed.", Toast.LENGTH_SHORT).show()
+                                        }
+                                        isApplyingResultRotation = false
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("↺ Left")
+                            }
+                            Spacer(modifier = Modifier.size(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    if (isApplyingResultRotation) return@OutlinedButton
+                                    isApplyingResultRotation = true
+                                    scope.launch {
+                                        val ok = withContext(Dispatchers.IO) {
+                                            rotateJpegFileInPlace(file, quarterTurns = 1)
+                                        }
+                                        if (ok) {
+                                            optimizedPreviewBitmap = withContext(Dispatchers.IO) {
+                                                decodePreviewBitmap(context, Uri.fromFile(file))
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "Rotation failed.", Toast.LENGTH_SHORT).show()
+                                        }
+                                        isApplyingResultRotation = false
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Right ↻")
+                            }
+                        }
                     } ?: Box(modifier = Modifier.fillMaxWidth().height(420.dp), contentAlignment = Alignment.Center) {
                         TextBlock("Loading optimized preview...", 13.sp, FontWeight.Medium, textSecondary)
                     }
@@ -521,7 +629,7 @@ fun MainScreen(incomingUris: List<Uri>) {
                     onClick = { showResultDetails = !showResultDetails },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (showResultDetails) "Details ausblenden" else "Details anzeigen")
+                    Text(if (showResultDetails) "Hide details" else "Show details")
                 }
                 if (showResultDetails) {
                     Spacer(modifier = Modifier.height(8.dp))
@@ -534,12 +642,12 @@ fun MainScreen(incomingUris: List<Uri>) {
                             .padding(12.dp)
                     ) {
                         Column {
-                            TextBlock("Datei: ${file.name}", 12.sp, FontWeight.Medium, textSecondary)
-                            TextBlock("Größe: ${file.length() / 1024} KB", 12.sp, FontWeight.Medium, textSecondary)
+                            TextBlock("File: ${file.name}", 12.sp, FontWeight.Medium, textSecondary)
+                            TextBlock("Size: ${file.length() / 1024} KB", 12.sp, FontWeight.Medium, textSecondary)
                             optimizedPreviewBitmap?.let { bmp ->
-                                TextBlock("Auflösung: ${bmp.width} x ${bmp.height}", 12.sp, FontWeight.Medium, textSecondary)
+                                TextBlock("Resolution: ${bmp.width} x ${bmp.height}", 12.sp, FontWeight.Medium, textSecondary)
                             }
-                            TextBlock("Modus: ${if (exportMode == ExportMode.POST) "Post" else "Story"}", 12.sp, FontWeight.Medium, textSecondary)
+                            TextBlock("Mode: ${if (exportMode == ExportMode.POST) "Post" else "Story"}", 12.sp, FontWeight.Medium, textSecondary)
                         }
                     }
                 }
@@ -639,7 +747,7 @@ private fun ThemeSettingsScreen(
             TextBlock("Theme Settings", 24.sp, FontWeight.Bold, textPrimary)
             Spacer(modifier = Modifier.height(12.dp))
             SecondaryAction(
-                label = "Zurück",
+                label = "Back",
                 onClick = onBack,
                 surface = surface,
                 border = border,
@@ -801,7 +909,7 @@ private fun ZoomableImageDialog(image: Bitmap, title: String, onDismiss: () -> U
         ) {
             Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 TextBlock(title, 16.sp, FontWeight.SemiBold, Color(0xFFF3F4F6))
-                TextBlock("Pinch zum Zoomen, ziehen zum Verschieben", 12.sp, FontWeight.Medium, Color(0xFFA8B1C5))
+                TextBlock("Pinch to zoom, drag to pan", 12.sp, FontWeight.Medium, Color(0xFFA8B1C5))
                 Spacer(modifier = Modifier.height(8.dp))
                 HorizontalDivider(color = Color(0xFF2A3D5E))
                 Spacer(modifier = Modifier.height(8.dp))
@@ -836,14 +944,14 @@ private fun ZoomableImageDialog(image: Bitmap, title: String, onDismiss: () -> U
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "Tippe außerhalb oder auf Schließen",
+                    text = "Tap outside or press Close",
                     color = Color(0xFFA8B1C5),
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
-                    Text("Schließen")
+                    Text("Close")
                 }
             }
         }
@@ -913,7 +1021,8 @@ private fun optimizeMultipleToZip(
     ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
         uris.forEachIndexed { index, uri ->
             val optimized = optimizeForInstagram(context, uri, mode, settings, "instagram_optimized_${index + 1}.jpg")
-            zos.putNextEntry(ZipEntry("instagram_optimized_${index + 1}.jpg"))
+            val ext = optimized.extension.ifBlank { "jpg" }
+            zos.putNextEntry(ZipEntry("instagram_optimized_${index + 1}.$ext"))
             optimized.inputStream().use { it.copyTo(zos) }
             zos.closeEntry()
         }
@@ -928,6 +1037,19 @@ private fun optimizeForInstagram(
     settings: AdvancedSettings,
     outputFileName: String = "instagram_optimized.jpg"
 ): File {
+    if (settings.preserveHdrIfAvailable && hasHdrLikeSource(context, uri)) {
+        val sourceBytes = getSourceSizeBytes(context, uri)
+        val maxPreserveHdrBytes = if (settings.fileSizeMode == FileSizeMode.STRICT_1_6_MB) {
+            6L * 1024L * 1024L
+        } else {
+            12L * 1024L * 1024L
+        }
+
+        if (sourceBytes in 1..maxPreserveHdrBytes) {
+            return copyOriginalToCache(context, uri, outputNameWithSourceExtension(context, uri, outputFileName))
+        }
+    }
+
     if (
         settings.depthHandlingMode == DepthHandlingMode.PRESERVE_SOCIAL_DEPTH &&
         settings.keepDepthAndXmpMetadata &&
@@ -945,6 +1067,16 @@ private fun optimizeForInstagram(
             resolutionProfile = ResolutionProfile.STANDARD_IG
         )
         return optimizeForInstagramInternal(context, uri, mode, safeSettings, outputFileName)
+    }
+}
+
+private fun getSourceSizeBytes(context: Context, uri: Uri): Long {
+    return try {
+        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+            afd.length
+        } ?: -1L
+    } catch (_: Exception) {
+        -1L
     }
 }
 
@@ -989,21 +1121,11 @@ private fun optimizeForInstagramInternal(
     val decodedBitmap = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
         val width = info.size.width
         val height = info.size.height
-        val megaPixels = (width.toLong() * height.toLong()) / 1_000_000L
         val scale = minOf(targetWidth / width.toFloat(), targetHeight / height.toFloat(), 1f)
         targetWidth = (width * scale).toInt().coerceAtLeast(1)
         targetHeight = (height * scale).toInt().coerceAtLeast(1)
 
-        var sampleSize = computeDecodeSampleSize(width, height, targetWidth, targetHeight)
-        if (megaPixels >= 20L) {
-            sampleSize = maxOf(sampleSize, 3)
-        }
-        if (megaPixels >= 36L) {
-            sampleSize = maxOf(sampleSize, 4)
-        }
-        if (megaPixels >= 48L) {
-            sampleSize = maxOf(sampleSize, 6)
-        }
+        val sampleSize = computeDecodeSampleSize(width, height, targetWidth, targetHeight)
 
         decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE)
         decoder.setTargetColorSpace(srgb)
@@ -1011,7 +1133,7 @@ private fun optimizeForInstagramInternal(
         decoder.isMutableRequired = false
     }
 
-    val resizedBitmap = highQualityResize(decodedBitmap, targetWidth, targetHeight, settings.antiAliasingLevel)
+    val resizedBitmap = highQualityResize(decodedBitmap, targetWidth, targetHeight)
     val file = File(context.cacheDir, outputFileName)
     FileOutputStream(file).use { it.write(compressJpegSmart(resizedBitmap, settings)) }
 
@@ -1029,11 +1151,15 @@ private fun compressJpegSmart(bitmap: Bitmap, settings: AdvancedSettings): ByteA
     repeat(8) {
         val attempt = findBestJpegAtOrBelowTarget(working, preferredTarget)
         if (attempt != null) return attempt
+        if (settings.fileSizeMode == FileSizeMode.ADAPTIVE_BEST_QUALITY) {
+            val attempt16 = findBestJpegAtOrBelowTarget(working, 1_600 * 1024, 90)
+            if (attempt16 != null) return attempt16
+        }
 
         val nextW = (working.width * 0.96f).toInt().coerceAtLeast(900)
         val nextH = (working.height * 0.96f).toInt().coerceAtLeast(900)
         if (nextW == working.width || nextH == working.height) return best
-        working = highQualityResize(working, nextW, nextH, settings.antiAliasingLevel)
+        working = highQualityResize(working, nextW, nextH)
         best = encodeJpeg(working, 95)
     }
     return best
@@ -1063,34 +1189,24 @@ private fun findBestJpegAtOrBelowTarget(bitmap: Bitmap, targetBytes: Int, minQua
 }
 
 private fun computeDecodeSampleSize(sourceWidth: Int, sourceHeight: Int, targetWidth: Int, targetHeight: Int): Int {
-    // Decode closer to final size to reduce OOM risk on high-MP images.
-    val wantedW = targetWidth.coerceAtLeast(1)
-    val wantedH = targetHeight.coerceAtLeast(1)
+    val wantedW = (targetWidth * 2).coerceAtLeast(1)
+    val wantedH = (targetHeight * 2).coerceAtLeast(1)
     val ratioW = sourceWidth.toFloat() / wantedW.toFloat()
     val ratioH = sourceHeight.toFloat() / wantedH.toFloat()
-    return minOf(ratioW, ratioH).toInt().coerceAtLeast(1)
+    return min(ratioW, ratioH).toInt().coerceAtLeast(1)
 }
 
-private fun highQualityResize(source: Bitmap, targetWidth: Int, targetHeight: Int, antiAliasingLevel: Int): Bitmap {
+private fun highQualityResize(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
     if (source.width == targetWidth && source.height == targetHeight) return source
 
     val downscaleRatio = maxOf(source.width, source.height).toFloat() / maxOf(targetWidth, targetHeight).toFloat().coerceAtLeast(1f)
-    val baseBlurRadius = when {
+    val blurRadius = when {
         downscaleRatio >= 4.0f -> 2
         downscaleRatio >= 2.4f -> 1
         else -> 0
     }
-    val userBoost = when (antiAliasingLevel.coerceIn(0, 3)) {
-        0 -> -1
-        1 -> 0
-        2 -> 1
-        else -> 2
-    }
-    val blurRadius = (baseBlurRadius + userBoost).coerceIn(0, 3)
 
-    val sourcePixels = source.width.toLong() * source.height.toLong()
-    val allowBlur = blurRadius > 0 && sourcePixels <= 5_000_000L
-    var current = if (allowBlur) applyBoxBlurSafe(source, blurRadius) else source
+    var current = if (blurRadius > 0) applyBoxBlurSafe(source, blurRadius) else source
     val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
         isAntiAlias = true
         isFilterBitmap = true
@@ -1186,6 +1302,7 @@ private fun applyBoxBlurSafe(source: Bitmap, radius: Int): Bitmap {
     }
 }
 
+
 private fun decodePreviewBitmap(context: Context, uri: Uri, maxEdge: Int = 2048): Bitmap {
     val source = ImageDecoder.createSource(context.contentResolver, uri)
     return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
@@ -1193,6 +1310,109 @@ private fun decodePreviewBitmap(context: Context, uri: Uri, maxEdge: Int = 2048)
         decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE)
         decoder.setTargetSampleSize(sampleSize)
         decoder.isMutableRequired = false
+    }
+}
+
+private fun rotateBitmapByQuarterTurns(source: Bitmap, quarterTurns: Int): Bitmap {
+    val normalized = ((quarterTurns % 4) + 4) % 4
+    if (normalized == 0) return source
+    val matrix = Matrix().apply { postRotate((normalized * 90).toFloat()) }
+    return try {
+        Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+    } catch (_: Exception) {
+        source
+    }
+}
+
+private fun rotateJpegFileInPlace(file: File, quarterTurns: Int): Boolean {
+    if (isHdrLikeFile(file)) {
+        return rotateByExifOrientationTag(file, quarterTurns)
+    }
+    return try {
+        val source = ImageDecoder.createSource(file)
+        val bitmap = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+            decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE)
+            decoder.isMutableRequired = false
+        }
+        val rotated = rotateBitmapByQuarterTurns(bitmap, quarterTurns)
+        FileOutputStream(file, false).use { out ->
+            rotated.compress(Bitmap.CompressFormat.JPEG, 95, out)
+        }
+        val exif = ExifInterface(file.absolutePath)
+        exif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+        exif.saveAttributes()
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private fun outputNameWithSourceExtension(context: Context, uri: Uri, fallbackName: String): String {
+    val mime = context.contentResolver.getType(uri)?.lowercase().orEmpty()
+    val ext = when {
+        mime.contains("heic") || mime.contains("heif") -> "heic"
+        mime.contains("avif") -> "avif"
+        mime.contains("png") -> "png"
+        mime.contains("webp") -> "webp"
+        else -> "jpg"
+    }
+    val base = fallbackName.substringBeforeLast('.', fallbackName)
+    return "$base.$ext"
+}
+
+private fun hasHdrLikeSource(context: Context, uri: Uri): Boolean {
+    val mime = context.contentResolver.getType(uri)?.lowercase().orEmpty()
+    val mimeSuggestsHdrContainer = mime.contains("heic") || mime.contains("heif")
+
+    val xmpSuggestsHdr = try {
+        val exif = context.contentResolver.openInputStream(uri)?.use { ExifInterface(it) }
+        val xmp = exif?.getAttribute(ExifInterface.TAG_XMP)?.lowercase().orEmpty()
+        xmp.contains("gainmap") || xmp.contains("hdrgm") || xmp.contains("ultrahdr") || xmp.contains("iso21496")
+    } catch (_: Exception) {
+        false
+    }
+
+    val wideGamutSuggestsHdr = try {
+        var isWide = false
+        val source = ImageDecoder.createSource(context.contentResolver, uri)
+        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+            isWide = info.colorSpace?.isWideGamut == true
+            decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE)
+            decoder.setTargetSampleSize(32)
+            decoder.isMutableRequired = false
+        }
+        isWide
+    } catch (_: Exception) {
+        false
+    }
+
+    return mimeSuggestsHdrContainer || xmpSuggestsHdr || wideGamutSuggestsHdr
+}
+
+private fun isHdrLikeFile(file: File): Boolean {
+    val ext = file.extension.lowercase()
+    return ext == "heic" || ext == "heif"
+}
+
+private fun rotateByExifOrientationTag(file: File, quarterTurns: Int): Boolean {
+    return try {
+        val exif = ExifInterface(file.absolutePath)
+        val normalizedTurns = ((quarterTurns % 4) + 4) % 4
+        if (normalizedTurns == 0) return true
+        val current = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        val sequence = listOf(
+            ExifInterface.ORIENTATION_NORMAL,
+            ExifInterface.ORIENTATION_ROTATE_90,
+            ExifInterface.ORIENTATION_ROTATE_180,
+            ExifInterface.ORIENTATION_ROTATE_270
+        )
+        val idx = sequence.indexOf(current).takeIf { it >= 0 } ?: 0
+        val next = sequence[(idx + normalizedTurns) % 4]
+        exif.setAttribute(ExifInterface.TAG_ORIENTATION, next.toString())
+        exif.saveAttributes()
+        true
+    } catch (_: Exception) {
+        false
     }
 }
 
@@ -1238,10 +1458,16 @@ private fun copyMetadataForSocialMedia(context: Context, sourceUri: Uri, outputF
 
 private fun saveOptimizedImage(context: Context, sourceFile: File, mode: ExportMode): Boolean {
     val resolver = context.contentResolver
-    val fileName = if (mode == ExportMode.STORY) "instagram_story_${System.currentTimeMillis()}.jpg" else "instagram_post_${System.currentTimeMillis()}.jpg"
+    val mimeType = inferImageMimeTypeFromFile(sourceFile)
+    val ext = extensionFromMimeType(mimeType)
+    val fileName = if (mode == ExportMode.STORY) {
+        "instagram_story_${System.currentTimeMillis()}.$ext"
+    } else {
+        "instagram_post_${System.currentTimeMillis()}.$ext"
+    }
     val values = ContentValues().apply {
         put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+        put(MediaStore.Images.Media.MIME_TYPE, mimeType)
         put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/InstagramOptimizer")
         put(MediaStore.Images.Media.IS_PENDING, 1)
     }
@@ -1280,7 +1506,7 @@ private fun saveZipToDownloads(context: Context, zipFile: File): Boolean {
 private fun shareToInstagram(context: Context, file: File) {
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
     val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "image/jpeg"
+        type = inferImageMimeTypeFromFile(file)
         putExtra(Intent.EXTRA_STREAM, uri)
         setPackage("com.instagram.android")
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -1300,6 +1526,26 @@ private fun shareZip(context: Context, file: File) {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     context.startActivity(Intent.createChooser(intent, "Share ZIP"))
+}
+
+private fun inferImageMimeTypeFromFile(file: File): String {
+    return when (file.extension.lowercase()) {
+        "heic", "heif" -> "image/heic"
+        "avif" -> "image/avif"
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        else -> "image/jpeg"
+    }
+}
+
+private fun extensionFromMimeType(mimeType: String): String {
+    return when (mimeType.lowercase()) {
+        "image/heic", "image/heif" -> "heic"
+        "image/avif" -> "avif"
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        else -> "jpg"
+    }
 }
 
 private fun extractSharedImageUris(intent: Intent?): List<Uri> {
@@ -1337,7 +1583,8 @@ private fun loadAdvancedSettings(context: Context): AdvancedSettings {
         } else {
             DepthHandlingMode.OPTIMIZE_MAY_LOSE_DEPTH
         },
-        antiAliasingLevel = prefs.getInt("aa_level", 2).coerceIn(0, 3)
+        antiAliasingLevel = prefs.getInt("aa_level", 2).coerceIn(0, 3),
+        preserveHdrIfAvailable = prefs.getBoolean("preserve_hdr_if_available", true)
     )
 }
 
@@ -1349,6 +1596,7 @@ private fun saveAdvancedSettings(context: Context, settings: AdvancedSettings) {
         .putBoolean("keep_depth_xmp", settings.keepDepthAndXmpMetadata)
         .putInt("depth_mode", if (settings.depthHandlingMode == DepthHandlingMode.PRESERVE_SOCIAL_DEPTH) 1 else 0)
         .putInt("aa_level", settings.antiAliasingLevel)
+        .putBoolean("preserve_hdr_if_available", settings.preserveHdrIfAvailable)
         .apply()
 }
 
