@@ -38,3 +38,16 @@ keystore.properties
 
 # Firebase / Google Services (optional; keep if app requires committing them)
 google-services.json
+
+# ProGuard / R8 mapping files (optional to ignore; keep if you want to keep mapping files for debugging)
+mapping.txt
+mapping/ 
+
+# Misc
+*.orig
+*.bak
+*.swp
+
+# Snapshots
+*.snap
+/snapshots/
