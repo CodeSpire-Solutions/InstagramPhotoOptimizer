@@ -23,6 +23,15 @@ Built with Kotlin + Jetpack Compose + Material 3.
 - Local gallery/downloads save
 - Fully offline processing
 
+## Showcase
+
+See the Instagram Photo Optimizer in action:
+
+<video width="400" controls>
+  <source src="./videos/InstagramOptimizerComparisonShort.mov" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
 ## Technical Stack
 
 - Kotlin
